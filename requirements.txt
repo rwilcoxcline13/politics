@@ -1,0 +1,10 @@
+fuzzywuzzy
+python-Levenshtein
+numpy
+openai
+pandas
+openpyxl
+pinecone[grpc]
+python-dotenv
+rich
+tabulate

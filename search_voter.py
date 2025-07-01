@@ -1,11 +1,67 @@
 #!/usr/bin/env python3
 """
-Voter search with intelligent matching and confidence scoring
+Intelligent Voter Search System with Semantic Matching
 
-Usage:
+PURPOSE:
+This script provides an advanced voter search system that combines vector embeddings with fuzzy string matching
+to find voters by name, handling variations like nicknames, initials, and typos. It's designed for political
+campaigns and voter data management.
+
+KEY FEATURES:
+- Semantic search using OpenAI embeddings for nickname and variation matching
+- Fuzzy string matching for validation and confidence scoring
+- Intelligent confidence scoring that combines vector and string similarity
+- Support for single searches, batch processing, and comprehensive testing
+- Detailed match analysis explaining why results were returned
+- Integration with Pinecone vector database for fast retrieval
+
+SEARCH CAPABILITIES:
+- Handles full names, nicknames, initials, and partial matches
+- Understands semantic relationships (e.g., "Jeff" matches "Jefferson")
+- Provides confidence scores and match quality assessments
+- Supports case-insensitive and normalized searching
+- Returns detailed voter information including demographics and location
+
+INPUT REQUIREMENTS:
+- Environment variables: PINECONE_API_KEY, OPENAI_API_KEY
+- Pinecone index with voter embeddings (namespace: "voter-names")
+- Voter data must be pre-processed and embedded in Pinecone
+
+OUTPUT:
+- Ranked list of potential matches with confidence scores
+- Detailed match analysis and explanations
+- CSV export for batch processing results
+- JSON output option for programmatic use
+
+USAGE EXAMPLES:
+    # Single search
     python search_voter.py "Jefferson Escoto"
-    python search_voter.py "Jeff Escoto"
+    python search_voter.py "Jeff Escoto"  # Handles nickname automatically
+    
+    # Batch processing
+    python search_voter.py --batch names.txt
+    
+    # Testing and analysis
     python search_voter.py "test" --run-tests
+    python search_voter.py "John Smith" --analyze --json
+
+COMMAND LINE OPTIONS:
+    --run-tests: Execute comprehensive test suite
+    --top N: Return top N results (default: 5)
+    --threshold F: Minimum confidence threshold (default: 0.75)
+    --batch FILE: Process multiple names from file
+    --analyze: Show detailed match analysis
+    --json: Output results in JSON format
+
+DEPENDENCIES:
+- pinecone-client (Pinecone vector database)
+- openai (OpenAI API for embeddings)
+- fuzzywuzzy (fuzzy string matching)
+- pandas, tabulate (data processing and display)
+- Environment variables: PINECONE_API_KEY, OPENAI_API_KEY
+
+AUTHOR: Political campaign voter search system
+VERSION: 1.0
 """
 
 import os
@@ -20,6 +76,9 @@ import pandas as pd
 from tabulate import tabulate
 import time
 import numpy as np
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class VoterSearcher:
     """Search with intelligent matching and confidence scoring"""
@@ -175,22 +234,16 @@ class VoterSearcher:
             if confidence < confidence_threshold and confidence < 0.7:
                 continue
             
-            # Build result
-            result = {
-                'voter_id': metadata.get('voter_id'),
-                'ma_voter_id': metadata.get('ma_voter_id'),
-                'full_name': full_name,
-                'first_name': metadata.get('first_name'),
-                'last_name': metadata.get('last_name'),
-                'age': metadata.get('age'),
-                'gender': metadata.get('gender'),
-                'ward': metadata.get('ward'),
-                'precinct': metadata.get('precinct'),
+            # Build result - include ALL metadata plus search-specific fields
+            result = metadata.copy()  # Start with all metadata
+            
+            # Add search-specific fields
+            result.update({
                 'vector_score': round(vector_score, 4),
                 'confidence': round(confidence, 4),
                 'match_quality': match_quality,
                 'string_similarity': {k: round(v, 3) for k, v in string_scores.items() if v > 0}
-            }
+            })
             
             matches.append(result)
         
@@ -402,15 +455,16 @@ Examples:
                 print(json.dumps(matches, indent=2))
             else:
                 for i, match in enumerate(matches, 1):
-                    print(f"\n{i}. {match['full_name']}")
+                    print(f"\n{i}. {match.get('full_name', 'Unknown')}")
                     print(f"   Confidence: {match['confidence']} ({match['match_quality']})")
-                    print(f"   Voter ID: {match['voter_id']}")
-                    print(f"   MA ID: {match['ma_voter_id']}")
                     
-                    if match.get('age'):
-                        print(f"   Age: {match['age']}")
-                    if match.get('ward'):
-                        print(f"   Location: Ward {match['ward']}, Precinct {match['precinct']}")
+                    # Display all metadata fields (excluding search-specific ones)
+                    search_fields = {'confidence', 'match_quality', 'vector_score', 'string_similarity'}
+                    for key, value in match.items():
+                        if key not in search_fields and value is not None and value != '':
+                            # Format the key name nicely
+                            display_key = key.replace('_', ' ').title()
+                            print(f"   {display_key}: {value}")
                     
                     if args.analyze:
                         analysis = searcher.analyze_match(args.name, match)

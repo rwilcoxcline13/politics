@@ -1,3 +1,38 @@
+"""
+Municipal and Federal Election Voter Analysis and Propensity Scoring
+
+KEY FEATURES:
+- Calculates municipal and federal election participation metrics (2012-2024)
+- Categorizes voters into propensity groups: Never Voter, Lost Voter, Sporadic Voter, Consistent Voter, Super Voter
+- Generates activation priority scores (1-5) for campaign targeting
+- Creates school committee likelihood scores based on demographics and voting history
+- Produces comprehensive analysis reports and specialized output files
+- Handles both municipal (annual) and federal (biennial) election cycles
+
+INPUT REQUIREMENTS:
+- CSV file with voter data containing columns like:
+  * vb.vf_mYYYY (municipal voting history: Y/N for each year)
+  * vb.vf_gYYYY (federal voting history: Y/N for each year)
+  * vb.voterbase_age, vb.voterbase_marital_status (demographics)
+  * ts.tsmart_local_voter_score (local voting propensity)
+  * ts.tsmart_children_present_score (family composition)
+  * enh.tsmart_enhanced_hh_size (household size)
+  * gsyn.synth_hh_pct_less_than_35_age (household age composition)
+
+OUTPUT FILES:
+- Main file: {input}_with_election_metrics.csv (all voters with new metrics)
+- Never voted municipal: {input}_never_voted_municipal.csv
+- Never voted federal: {input}_never_voted_federal.csv
+- Never voted any: {input}_never_voted_any_election.csv
+- High priority municipal targets: {input}_high_priority_municipal_targets.csv
+- High priority federal targets: {input}_high_priority_federal_targets.csv
+- Federal-only voters: {input}_federal_only_voters.csv
+
+USAGE:
+    python municipal_propensity.py
+    # Processes 'quincy_voters_final_with_all_donors_improved.csv' by default
+"""
+
 import pandas as pd
 import numpy as np
 from datetime import datetime

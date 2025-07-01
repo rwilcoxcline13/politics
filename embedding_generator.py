@@ -1,3 +1,39 @@
+"""
+OpenAI Embedding Generator for Text Data
+
+CLASS METHODS:
+- get_embedding(): Generate embedding for a single text
+- get_embeddings(): Batch process multiple texts
+- embed_data(): Process structured data with custom text/id extractors
+
+INPUT REQUIREMENTS:
+- OpenAI API key
+- Text data (strings, lists, or custom data structures)
+- Optional custom functions to extract text and IDs from data
+
+OUTPUT:
+- List of float vectors (embeddings)
+- Dictionary mapping data IDs to embedding vectors
+- Automatic handling of missing data with zero vectors
+
+USAGE EXAMPLES:
+    # Single text embedding
+    embedder = EmbeddingGenerator()
+    embedding = embedder.get_embedding("Hello world")
+    
+    # Batch processing
+    texts = ["Text 1", "Text 2", "Text 3"]
+    embeddings = embedder.get_embeddings(texts)
+    
+    # Custom data processing
+    data = [{"id": 1, "text": "Hello"}, {"id": 2, "text": "World"}]
+    results = embedder.embed_data(
+        data,
+        text_extractor=lambda x: x["text"],
+        id_extractor=lambda x: x["id"]
+    )
+"""
+
 import openai
 import os
 import numpy as np
@@ -93,7 +129,7 @@ class EmbeddingGenerator:
             result[orig_idx] = response.data[filtered_idx].embedding
         
         # Fill None values with zeros
-        default_dim = 1536  # Default for text-embedding-3-large
+        default_dim = dimensions if dimensions is not None else 1536  # Default for text-embedding-3-large
         for i, emb in enumerate(result):
             if emb is None:
                 result[i] = [0.0] * default_dim
