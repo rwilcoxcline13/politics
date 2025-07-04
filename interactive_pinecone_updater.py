@@ -12,6 +12,7 @@ stored in the "data" folder. It provides a user-friendly interface to:
 
 KEY FEATURES:
 - Interactive prompts for dataset and column selection
+- Preview mode: Shows match/update rates before making any changes
 - Uses existing search_voter functionality to find matching records
 - Graceful handling of missing matches and data format issues
 - Automatic verification of updates using pinecone_dataset_inspector
@@ -325,13 +326,15 @@ class PineconeDataUpdater:
                 stats['errors'] += 1
                 print(f"❌ Batch update error for '{update_item.get('original_name', 'Unknown')}': {e}")
     
-    def process_dataset(self, df: pd.DataFrame, match_column: str, update_columns: List[str]):
-        """Process the entire dataset and update Pinecone records - optimized version"""
-        print(f"\n🚀 Starting update process...")
+    def process_dataset(self, df: pd.DataFrame, match_column: str, update_columns: List[str], preview_only: bool = False):
+        """Process the entire dataset and update Pinecone records - optimized version with preview mode"""
+        mode_text = "preview" if preview_only else "update"
+        print(f"\n🚀 Starting {mode_text} process...")
         print(f"   Dataset size: {len(df)} records")
         print(f"   Match column: {match_column}")
         print(f"   Update columns: {', '.join(update_columns)}")
-        print(f"   Optimizations: Parallel search (10 threads), batch updates (50 at a time)")
+        if not preview_only:
+            print(f"   Optimizations: Parallel search (10 threads), batch updates (50 at a time)")
         print(f"   Note: Only errors will be displayed for cleaner output\n")
         
         # Statistics tracking
@@ -401,6 +404,7 @@ class PineconeDataUpdater:
         
         # Process in parallel batches
         update_queue = []  # Queue for batch updates
+        preview_matches = []  # Store matches for preview mode
         
         for batch_start in range(0, len(processed_records), search_batch_size):
             batch_end = min(batch_start + search_batch_size, len(processed_records))
@@ -408,7 +412,8 @@ class PineconeDataUpdater:
             
             # Progress indicator
             if batch_start % 100 == 0:
-                print(f"📊 Progress: {batch_start}/{len(processed_records)} records processed...")
+                progress_text = "preview" if preview_only else "processed"
+                print(f"📊 Progress: {batch_start}/{len(processed_records)} records {progress_text}...")
             
             # Parallel search for voters
             with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
@@ -427,7 +432,8 @@ class PineconeDataUpdater:
                         
                         if not voter_match:
                             stats['skipped_no_match'] += 1
-                            print(f"❌ No match found: '{record['original_name']}'")
+                            if preview_only:
+                                print(f"❌ No match found: '{record['original_name']}'")
                             continue
                         
                         stats['found'] += 1
@@ -437,34 +443,49 @@ class PineconeDataUpdater:
                         with updated_voter_ids_lock:
                             if voter_id in updated_voter_ids:
                                 stats['skipped_already_updated'] += 1
-                                print(f"⏭️  Skipping '{record['original_name']}' - voter {voter_id} already updated")
+                                if preview_only:
+                                    print(f"⏭️  Duplicate: '{record['original_name']}' - voter {voter_id} already in dataset")
                                 continue
                             
                             # Mark as being processed
                             updated_voter_ids.add(voter_id)
                         
-                        # Add to update queue
-                        update_queue.append({
-                            'voter_id': voter_id,
-                            'update_data': record['update_data'],
-                            'original_name': record['original_name']
-                        })
-                        
-                        # Process batch updates when queue is full
-                        if len(update_queue) >= update_batch_size:
-                            self._process_update_batch(update_queue, stats)
-                            update_queue = []
+                        if preview_only:
+                            # In preview mode, just count what would be updated
+                            preview_matches.append({
+                                'voter_id': voter_id,
+                                'original_name': record['original_name'],
+                                'update_data': record['update_data']
+                            })
+                            stats['updated'] += 1  # Count as "would be updated"
+                        else:
+                            # Add to update queue for actual processing
+                            update_queue.append({
+                                'voter_id': voter_id,
+                                'update_data': record['update_data'],
+                                'original_name': record['original_name']
+                            })
+                            
+                            # Process batch updates when queue is full
+                            if len(update_queue) >= update_batch_size:
+                                self._process_update_batch(update_queue, stats)
+                                update_queue = []
                     
                     except Exception as e:
                         stats['errors'] += 1
                         print(f"❌ Error searching for '{record['original_name']}': {e}")
         
-        # Process remaining updates
-        if update_queue:
+        # Process remaining updates (only in non-preview mode)
+        if not preview_only and update_queue:
             self._process_update_batch(update_queue, stats)
         
-        # Print final statistics
-        self.print_update_statistics(stats, updated_voter_ids)
+        # Print statistics
+        if preview_only:
+            self.print_preview_statistics(stats, updated_voter_ids, preview_matches)
+            return stats, preview_matches
+        else:
+            self.print_update_statistics(stats, updated_voter_ids)
+            return stats, None
     
     def print_update_statistics(self, stats: Dict, updated_voter_ids: set = None):
         """Print final update statistics - enhanced version"""
@@ -514,13 +535,86 @@ class PineconeDataUpdater:
             print(f"⚠️  Could not run verification: {e}")
             print("   You can manually run: python pinecone_dataset_inspector.py")
     
+    def get_pinecone_total_count(self) -> int:
+        """Get the total number of vectors in the Pinecone index"""
+        try:
+            # Get index statistics
+            stats = self.index.describe_index_stats()
+            
+            # Get total vector count from the namespace
+            if 'namespaces' in stats and self.namespace in stats['namespaces']:
+                total_count = stats['namespaces'][self.namespace]['vector_count']
+                return total_count
+            else:
+                # Fallback: get total across all namespaces
+                return stats.get('total_vector_count', 0)
+                
+        except Exception as e:
+            print(f"⚠️  Warning: Could not get Pinecone total count: {e}")
+            return 0
+
+    def print_preview_statistics(self, stats: Dict, unique_voter_ids: set, preview_matches: List[Dict]):
+        """Print preview statistics before actual updates"""
+        print(f"\n📊 PREVIEW RESULTS - What would happen:")
+        print(f"   Total records in dataset: {stats['total']}")
+        print(f"   Records with valid data: {stats['total'] - stats['skipped_no_data']}")
+        print(f"   Voters found in Pinecone: {stats['found']}")
+        print(f"   Records that would be updated: {stats['updated']}")
+        print(f"   Records with no match: {stats['skipped_no_match']}")
+        print(f"   Records with no valid data: {stats['skipped_no_data']}")
+        print(f"   Duplicate voters in dataset: {stats['skipped_already_updated']}")
+        print(f"   Search errors: {stats['errors']}")
+        
+        if stats['total'] > 0:
+            # Get total Pinecone dataset size
+            pinecone_total = self.get_pinecone_total_count()
+            
+            match_rate = (stats['found'] / stats['total']) * 100
+            update_rate = (stats['updated'] / stats['total']) * 100
+            unique_updates = len(unique_voter_ids)
+            print(f"\n📈 Projected Rates:")
+            print(f"   Match rate: {match_rate:.1f}% ({stats['found']}/{stats['total']})")
+            print(f"   Update rate: {update_rate:.1f}% ({stats['updated']}/{stats['total']})")
+            print(f"   Unique voters to be updated: {unique_updates}")
+            
+            # Add Pinecone dataset perspective
+            if pinecone_total > 0:
+                pinecone_match_rate = (stats['found'] / pinecone_total) * 100
+                pinecone_update_rate = (stats['updated'] / pinecone_total) * 100
+                print(f"\n📊 Pinecone Dataset Impact:")
+                print(f"   Total vectors in Pinecone: {pinecone_total:,}")
+                print(f"   Match rate vs Pinecone: {pinecone_match_rate:.2f}% ({stats['found']}/{pinecone_total:,})")
+                print(f"   Update rate vs Pinecone: {pinecone_update_rate:.2f}% ({stats['updated']}/{pinecone_total:,})")
+                print(f"   Percentage of Pinecone being updated: {pinecone_update_rate:.2f}%")
+            
+            # Show some example matches
+            if preview_matches and len(preview_matches) > 0:
+                print(f"\n🔍 Example matches (first 5):")
+                for i, match in enumerate(preview_matches[:5]):
+                    update_fields = list(match['update_data'].keys())
+                    print(f"   {i+1}. '{match['original_name']}' → Voter {match['voter_id']} (fields: {', '.join(update_fields)})")
+                
+                if len(preview_matches) > 5:
+                    print(f"   ... and {len(preview_matches) - 5} more matches")
+
+    def preview_dataset_updates(self, df: pd.DataFrame, match_column: str, update_columns: List[str]):
+        """Preview what would happen during the update process without making changes"""
+        print(f"\n🔍 PREVIEW MODE - Analyzing potential updates...")
+        print("   This will search for matches but won't make any changes to Pinecone.")
+        
+        # Run process in preview mode
+        stats, preview_matches = self.process_dataset(df, match_column, update_columns, preview_only=True)
+        
+        return stats, preview_matches
+    
     def run_interactive_update(self):
-        """Main interactive update process"""
+        """Main interactive update process with preview mode"""
         print("=" * 70)
         print("🎯 INTERACTIVE PINECONE DATA UPDATER")
         print("=" * 70)
         print("This tool helps you update Pinecone voter data using local datasets.")
         print("You can add new fields or update existing empty fields.")
+        print("New: Preview mode shows match/update rates before making changes!")
         print()
         
         # Step 1: Select dataset
@@ -538,26 +632,45 @@ class PineconeDataUpdater:
         if not match_column or not update_columns:
             return
         
-        # Step 4: Confirm before processing
-        print(f"\n⚠️  CONFIRMATION REQUIRED")
+        # Step 4: Preview what would happen
+        print(f"\n🔍 STEP 4: PREVIEW MODE")
+        print(f"   Let's see what would happen before making any changes...")
+        
+        preview_confirm = input("\nRun preview analysis? (yes/no): ").strip().lower()
+        if preview_confirm not in ['yes', 'y']:
+            print("👋 Update cancelled")
+            return
+        
+        # Run preview
+        stats, preview_matches = self.preview_dataset_updates(df, match_column, update_columns)
+        
+        # Step 5: Confirm before actual processing
+        print(f"\n⚠️  FINAL CONFIRMATION REQUIRED")
         print(f"   Dataset: {dataset_path}")
-        print(f"   Records to process: {len(df)}")
-        print(f"   Match on: {match_column}")
-        print(f"   Update: {', '.join(update_columns)}")
         print(f"   Target: Pinecone namespace '{self.namespace}'")
         print(f"   Confidence threshold: 0.6")
         print(f"   Update mode: Will overwrite existing values (one update per person)")
         print(f"   Performance: Parallel processing with 10 threads + batch updates")
         
-        confirm = input("\nProceed with update? (yes/no): ").strip().lower()
+        if stats['updated'] == 0:
+            print(f"\n❌ No records would be updated. Nothing to do.")
+            return
+        
+        print(f"\n📈 Expected Results:")
+        print(f"   • {stats['updated']} records will be updated")
+        print(f"   • {stats['found']} total matches found")
+        print(f"   • {stats['skipped_no_match']} records will be skipped (no match)")
+        
+        confirm = input(f"\nProceed with updating {stats['updated']} records? (yes/no): ").strip().lower()
         if confirm not in ['yes', 'y']:
             print("👋 Update cancelled")
             return
         
-        # Step 5: Process dataset
-        self.process_dataset(df, match_column, update_columns)
+        # Step 6: Process dataset (actual updates)
+        print(f"\n🚀 STEP 6: PERFORMING ACTUAL UPDATES")
+        self.process_dataset(df, match_column, update_columns, preview_only=False)
         
-        # Step 6: Verify changes
+        # Step 7: Verify changes
         verify = input("\nRun verification check? (yes/no): ").strip().lower()
         if verify in ['yes', 'y']:
             self.verify_changes()
